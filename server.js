@@ -31,7 +31,7 @@ app.post('/proxy', async (req, res) => {
     const r = await fetch(url, {
       headers: {
         'Signature': sig,
-        'timestamp': ts,
+        'Timestamp': ts,
         'Accept': 'application/json'
       }
     });
