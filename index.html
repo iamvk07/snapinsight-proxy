@@ -218,22 +218,36 @@ let C = {};
 
 const PROXY = 'https://snapinsight-proxy.onrender.com';
 
-async function api(path, extra={}) {
-  const r = await fetch(`${PROXY}/proxy`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      clientId: C.clientId,
-      consumerKey: C.consumerKey,
-      path,
-      params: extra
-    })
-  });
-  if (!r.ok) {
-    const body = await r.text();
-    throw new Error(`API ${r.status}: ${body.slice(0,200)}`);
+// Wake proxy on load (Render free tier spins down)
+fetch(`${PROXY}/health`).catch(()=>{});
+
+async function api(path, extra={}, retries=2) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      const r = await fetch(`${PROXY}/proxy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          clientId: C.clientId,
+          consumerKey: C.consumerKey,
+          path,
+          params: extra
+        })
+      });
+      clearTimeout(timeout);
+      if (!r.ok) {
+        const body = await r.text();
+        throw new Error(`API ${r.status}: ${body.slice(0,200)}`);
+      }
+      return r.json();
+    } catch(e) {
+      if (i === retries) throw new Error('Proxy unreachable. The server may be waking up — please wait 30 seconds and try again.');
+      await new Promise(r => setTimeout(r, 3000));
+    }
   }
-  return r.json();
 }
 
 async function connect() {
