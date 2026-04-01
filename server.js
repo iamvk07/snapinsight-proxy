@@ -1,13 +1,10 @@
 const express = require('express');
 const cors = require('cors');
-const crypto = require('crypto');
-const fetch = require('node-fetch');
+const { Snaptrade } = require('snaptrade-typescript-sdk');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-const BASE = 'https://api.snaptrade.com/api/v1';
 
 app.post('/proxy', async (req, res) => {
   try {
@@ -16,38 +13,43 @@ app.post('/proxy', async (req, res) => {
       return res.status(400).json({ error: 'Missing fields' });
     }
 
-    const ts = Math.floor(Date.now() / 1000).toString();
-    const msg = clientId + ts + path;
-    const sig = crypto.createHmac('sha256', consumerKey).update(msg).digest('hex');
+    const snaptrade = new Snaptrade({ clientId, consumerKey });
 
-    // Build query string — clientId and timestamp go in query
-    const qp = new URLSearchParams({ clientId, timestamp: ts });
-    // Add extra params (userId, userSecret, etc)
-    Object.entries(params).forEach(([k,v]) => qp.append(k, v));
+    const { userId, userSecret, ...rest } = params;
 
-    const url = `${BASE}${path}?${qp.toString()}`;
-    console.log('Calling:', url.replace(consumerKey, '***'));
+    // Route to the correct SDK method based on path
+    let data;
 
-    const r = await fetch(url, {
-      headers: {
-        'Signature': sig,
-        'Timestamp': ts,
-        'Accept': 'application/json'
-      }
-    });
-
-    const text = await r.text();
-    console.log('SnapTrade status:', r.status, text.slice(0, 200));
-
-    try {
-      res.status(r.status).json(JSON.parse(text));
-    } catch {
-      res.status(r.status).send(text);
+    if (path === '/holdings') {
+      const r = await snaptrade.accountInformation.getAllUserHoldings({ userId, userSecret });
+      data = r.data;
+    } else if (path === '/accounts') {
+      const r = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+      data = r.data;
+    } else if (path === '/performance/custom') {
+      const r = await snaptrade.transactionsAndReporting.getReportingCustomRange({ userId, userSecret, ...rest });
+      data = r.data;
+    } else if (path === '/activities') {
+      const r = await snaptrade.transactionsAndReporting.getActivities({ userId, userSecret, ...rest });
+      data = r.data;
+    } else if (path === '/login') {
+      const r = await snaptrade.authentication.loginSnapTradeUser({ userId, userSecret });
+      data = r.data;
+    } else if (path === '/registerUser') {
+      const r = await snaptrade.authentication.registerSnapTradeUser({ userId });
+      data = r.data;
+    } else if (path === '/deleteUser') {
+      const r = await snaptrade.authentication.deleteSnapTradeUser({ userId });
+      data = r.data;
+    } else {
+      return res.status(400).json({ error: `Unknown path: ${path}` });
     }
 
+    res.json(data);
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: e.message });
+    console.error(e?.response?.data || e.message);
+    const status = e?.response?.status || 500;
+    res.status(status).json(e?.response?.data || { error: e.message });
   }
 });
 
