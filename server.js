@@ -1,10 +1,41 @@
 const express = require('express');
 const cors = require('cors');
-const { Snaptrade } = require('snaptrade-typescript-sdk');
+const crypto = require('crypto');
+const https = require('https');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+const BASE = 'https://api.snaptrade.com/api/v1';
+
+function sign(consumerKey, clientId, timestamp, path) {
+  const msg = clientId + timestamp + path;
+  return crypto.createHmac('sha256', consumerKey).update(msg).digest('hex');
+}
+
+function snapFetch(consumerKey, clientId, apiPath, queryParams) {
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const sig = sign(consumerKey, clientId, timestamp, apiPath);
+
+  const qp = new URLSearchParams({ clientId, timestamp, ...queryParams });
+  const url = `${BASE}${apiPath}?${qp.toString()}`;
+
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, {
+      headers: {
+        'Signature': sig,
+        'timestamp': timestamp,
+        'Accept': 'application/json'
+      }
+    }, (res) => {
+      let body = '';
+      res.on('data', d => body += d);
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', reject);
+  });
+}
 
 app.post('/proxy', async (req, res) => {
   try {
@@ -13,57 +44,22 @@ app.post('/proxy', async (req, res) => {
       return res.status(400).json({ error: 'Missing fields' });
     }
 
-    const snaptrade = new Snaptrade({ clientId, consumerKey });
     const { userId, userSecret, ...rest } = params;
+    const query = { userId, userSecret, ...rest };
 
-    let data;
+    const { status, body } = await snapFetch(consumerKey, clientId, path, query);
+    console.log(`${path} → ${status}: ${body.slice(0, 120)}`);
 
-    // /accounts
-    if (path === '/accounts') {
-      const r = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
-      data = r.data;
-
-    // /accounts/:id/holdings
-    } else if (/^\/accounts\/[^/]+\/holdings$/.test(path)) {
-      const accountId = path.split('/')[2];
-      const r = await snaptrade.accountInformation.getUserAccountHoldings({ userId, userSecret, accountId });
-      data = r.data;
-
-    // /accounts/:id/activities
-    } else if (/^\/accounts\/[^/]+\/activities$/.test(path)) {
-      const accountId = path.split('/')[2];
-      const r = await snaptrade.transactionsAndReporting.getActivities({ userId, userSecret, accounts: accountId, ...rest });
-      data = r.data;
-
-    // /holdings (all accounts)
-    } else if (path === '/holdings') {
-      const r = await snaptrade.accountInformation.getAllUserHoldings({ userId, userSecret });
-      data = r.data;
-
-    } else if (path === '/login') {
-      const r = await snaptrade.authentication.loginSnapTradeUser({ userId, userSecret });
-      data = r.data;
-
-    } else if (path === '/registerUser') {
-      const r = await snaptrade.authentication.registerSnapTradeUser({ userId });
-      data = r.data;
-
-    } else if (path === '/deleteUser') {
-      const r = await snaptrade.authentication.deleteSnapTradeUser({ userId });
-      data = r.data;
-
-    } else {
-      return res.status(400).json({ error: `Unknown path: ${path}` });
+    try {
+      res.status(status).json(JSON.parse(body));
+    } catch {
+      res.status(status).send(body);
     }
-
-    res.json(data);
   } catch (e) {
-    console.error(e?.response?.data || e.message);
-    const status = e?.response?.status || 500;
-    res.status(status).json(e?.response?.data || { error: e.message });
+    console.error(e.message);
+    res.status(500).json({ error: e.message });
   }
 });
-
 
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'snapinsight-proxy' }));
 
