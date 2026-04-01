@@ -14,33 +14,44 @@ app.post('/proxy', async (req, res) => {
     }
 
     const snaptrade = new Snaptrade({ clientId, consumerKey });
-
     const { userId, userSecret, ...rest } = params;
 
-    // Route to the correct SDK method based on path
     let data;
 
-    if (path === '/holdings') {
-      const r = await snaptrade.accountInformation.getAllUserHoldings({ userId, userSecret });
-      data = r.data;
-    } else if (path === '/accounts') {
+    // /accounts
+    if (path === '/accounts') {
       const r = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
       data = r.data;
-    } else if (path === '/performance/custom') {
-      const r = await snaptrade.transactionsAndReporting.getReportingCustomRange({ userId, userSecret, ...rest });
+
+    // /accounts/:id/holdings
+    } else if (/^\/accounts\/[^/]+\/holdings$/.test(path)) {
+      const accountId = path.split('/')[2];
+      const r = await snaptrade.accountInformation.getUserAccountHoldings({ userId, userSecret, accountId });
       data = r.data;
-    } else if (path === '/activities') {
-      const r = await snaptrade.transactionsAndReporting.getActivities({ userId, userSecret, ...rest });
+
+    // /accounts/:id/activities
+    } else if (/^\/accounts\/[^/]+\/activities$/.test(path)) {
+      const accountId = path.split('/')[2];
+      const r = await snaptrade.transactionsAndReporting.getActivities({ userId, userSecret, accounts: accountId, ...rest });
       data = r.data;
+
+    // /holdings (all accounts)
+    } else if (path === '/holdings') {
+      const r = await snaptrade.accountInformation.getAllUserHoldings({ userId, userSecret });
+      data = r.data;
+
     } else if (path === '/login') {
       const r = await snaptrade.authentication.loginSnapTradeUser({ userId, userSecret });
       data = r.data;
+
     } else if (path === '/registerUser') {
       const r = await snaptrade.authentication.registerSnapTradeUser({ userId });
       data = r.data;
+
     } else if (path === '/deleteUser') {
       const r = await snaptrade.authentication.deleteSnapTradeUser({ userId });
       data = r.data;
+
     } else {
       return res.status(400).json({ error: `Unknown path: ${path}` });
     }
