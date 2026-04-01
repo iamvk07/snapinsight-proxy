@@ -31,7 +31,8 @@ function computeSignature(consumerKey, apiPath, queryString, body) {
 }
 
 function snapFetch(consumerKey, clientId, apiPath, queryParams) {
-  const qp = new URLSearchParams({ clientId, ...queryParams });
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const qp = new URLSearchParams({ clientId, timestamp, ...queryParams });
   const queryString = qp.toString();
   const signature = computeSignature(consumerKey, apiPath, queryString, null);
   const url = `${BASE}${apiPath}?${queryString}`;
