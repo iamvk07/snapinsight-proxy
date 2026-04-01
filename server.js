@@ -9,30 +9,44 @@ app.use(express.json());
 
 const BASE = 'https://api.snaptrade.com/api/v1';
 
-function sign(clientId, consumerKey, path) {
-  const ts = Date.now().toString();
-  const msg = clientId + ts + path;
-  const sig = crypto.createHmac('sha256', consumerKey).update(msg).digest('hex');
-  return { ts, sig };
-}
-
-// Generic proxy endpoint
-// POST /proxy  body: { clientId, consumerKey, path, params }
 app.post('/proxy', async (req, res) => {
   try {
     const { clientId, consumerKey, path, params = {} } = req.body;
     if (!clientId || !consumerKey || !path) {
-      return res.status(400).json({ error: 'Missing clientId, consumerKey, or path' });
+      return res.status(400).json({ error: 'Missing fields' });
     }
-    const { ts, sig } = sign(clientId, consumerKey, path);
-    const allParams = new URLSearchParams({ clientId, timestamp: ts, ...params });
-    const url = `${BASE}${path}?${allParams}`;
+
+    const ts = Date.now().toString();
+    const msg = clientId + ts + path;
+    const sig = crypto.createHmac('sha256', consumerKey).update(msg).digest('hex');
+
+    // Build query string — clientId and timestamp go in query
+    const qp = new URLSearchParams({ clientId, timestamp: ts });
+    // Add extra params (userId, userSecret, etc)
+    Object.entries(params).forEach(([k,v]) => qp.append(k, v));
+
+    const url = `${BASE}${path}?${qp.toString()}`;
+    console.log('Calling:', url.replace(consumerKey, '***'));
+
     const r = await fetch(url, {
-      headers: { Signature: sig, timestamp: ts, Accept: 'application/json' }
+      headers: {
+        'Signature': sig,
+        'timestamp': ts,
+        'Accept': 'application/json'
+      }
     });
-    const data = await r.json();
-    res.status(r.status).json(data);
+
+    const text = await r.text();
+    console.log('SnapTrade status:', r.status, text.slice(0, 200));
+
+    try {
+      res.status(r.status).json(JSON.parse(text));
+    } catch {
+      res.status(r.status).send(text);
+    }
+
   } catch (e) {
+    console.error(e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -40,4 +54,4 @@ app.post('/proxy', async (req, res) => {
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'snapinsight-proxy' }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`SnapInsight proxy running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Proxy running on port ${PORT}`));
