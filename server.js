@@ -10,26 +10,35 @@ app.use(express.json());
 const BASE = 'https://api.snaptrade.com/api/v1';
 const BASE_PATH = '/api/v1';
 
-function sign(consumerKey, clientId, timestamp, path) {
-  const msg = clientId + timestamp + path;
-  return crypto.createHmac('sha256', consumerKey).update(msg).digest('hex');
+// Exact algorithm from SnapTrade SDK requestAfterHook.js
+function jsonStringifyOrdered(obj) {
+  const allKeys = [];
+  const seen = {};
+  JSON.stringify(obj, function(key, value) {
+    if (!(key in seen)) { allKeys.push(key); seen[key] = null; }
+    return value;
+  });
+  allKeys.sort();
+  return JSON.stringify(obj, allKeys);
+}
+
+function computeSignature(consumerKey, apiPath, queryString, body) {
+  const encodedKey = encodeURI(consumerKey);
+  const content = (body && Object.keys(body).length > 0) ? body : null;
+  const sigObject = { content, path: BASE_PATH + apiPath, query: queryString };
+  const message = jsonStringifyOrdered(sigObject);
+  return crypto.createHmac('sha256', encodedKey).update(message).digest('base64');
 }
 
 function snapFetch(consumerKey, clientId, apiPath, queryParams) {
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const fullPath = BASE_PATH + apiPath;
-  const sig = sign(consumerKey, clientId, timestamp, fullPath);
-
-  const qp = new URLSearchParams({ clientId, timestamp, ...queryParams });
-  const url = `${BASE}${apiPath}?${qp.toString()}`;
+  const qp = new URLSearchParams({ clientId, ...queryParams });
+  const queryString = qp.toString();
+  const signature = computeSignature(consumerKey, apiPath, queryString, null);
+  const url = `${BASE}${apiPath}?${queryString}`;
 
   return new Promise((resolve, reject) => {
     const req = https.get(url, {
-      headers: {
-        'Signature': sig,
-        'timestamp': timestamp,
-        'Accept': 'application/json'
-      }
+      headers: { 'Signature': signature, 'Accept': 'application/json' }
     }, (res) => {
       let body = '';
       res.on('data', d => body += d);
@@ -50,13 +59,10 @@ app.post('/proxy', async (req, res) => {
     const query = { userId, userSecret, ...rest };
 
     const { status, body } = await snapFetch(consumerKey, clientId, path, query);
-    console.log(`${path} → ${status}: ${body.slice(0, 120)}`);
+    console.log(`${path} → ${status}: ${body.slice(0, 150)}`);
 
-    try {
-      res.status(status).json(JSON.parse(body));
-    } catch {
-      res.status(status).send(body);
-    }
+    try { res.status(status).json(JSON.parse(body)); }
+    catch { res.status(status).send(body); }
   } catch (e) {
     console.error(e.message);
     res.status(500).json({ error: e.message });
