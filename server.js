@@ -8,6 +8,7 @@ app.use(cors());
 app.use(express.json());
 
 const BASE = 'https://api.snaptrade.com/api/v1';
+const BASE_PATH = '/api/v1';
 
 function sign(consumerKey, clientId, timestamp, path) {
   const msg = clientId + timestamp + path;
@@ -16,7 +17,8 @@ function sign(consumerKey, clientId, timestamp, path) {
 
 function snapFetch(consumerKey, clientId, apiPath, queryParams) {
   const timestamp = Math.floor(Date.now() / 1000).toString();
-  const sig = sign(consumerKey, clientId, timestamp, apiPath);
+  const fullPath = BASE_PATH + apiPath;
+  const sig = sign(consumerKey, clientId, timestamp, fullPath);
 
   const qp = new URLSearchParams({ clientId, timestamp, ...queryParams });
   const url = `${BASE}${apiPath}?${qp.toString()}`;
