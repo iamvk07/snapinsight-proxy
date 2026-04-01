@@ -16,7 +16,7 @@ app.post('/proxy', async (req, res) => {
       return res.status(400).json({ error: 'Missing fields' });
     }
 
-    const ts = Date.now().toString();
+    const ts = Math.floor(Date.now() / 1000).toString();
     const msg = clientId + ts + path;
     const sig = crypto.createHmac('sha256', consumerKey).update(msg).digest('hex');
 
