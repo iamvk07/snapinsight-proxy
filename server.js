@@ -10,12 +10,11 @@ app.use(express.json());
 const CLIENT_ID     = process.env.SNAPTRADE_CLIENT_ID;
 const CONSUMER_KEY  = process.env.SNAPTRADE_CONSUMER_KEY;
 const SERVER_SECRET = process.env.SERVER_SECRET || 'snapinsight-secret-change-me';
+const SNAP_USER_ID     = process.env.SNAPTRADE_USER_ID;
+const SNAP_USER_SECRET = process.env.SNAPTRADE_USER_SECRET;
 
 const BASE      = 'https://api.snaptrade.com/api/v1';
 const BASE_PATH = '/api/v1';
-
-// In-memory user store (survives within same server session)
-const userStore = new Map();
 
 // ── Token helpers (no DB needed) ──────────────────────────────────────────────
 function createToken(data) {
@@ -62,71 +61,19 @@ function snapGet(apiPath, queryParams) {
   });
 }
 
-function snapPost(apiPath, queryParams, bodyData) {
-  const timestamp   = Math.floor(Date.now() / 1000).toString();
-  const qp          = new URLSearchParams({ clientId: CLIENT_ID, timestamp, ...queryParams });
-  const queryString = qp.toString();
-  const signature   = buildSig(apiPath, queryString, bodyData);
-  const url         = `${BASE}${apiPath}?${queryString}`;
-  const postBody    = bodyData ? JSON.stringify(bodyData) : '';
-  const parsed      = new URL(url);
-
-  return new Promise((resolve, reject) => {
-    const req = https.request({
-      hostname: parsed.hostname, path: parsed.pathname + parsed.search, method: 'POST',
-      headers: { Signature: signature, Accept: 'application/json', 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postBody) }
-    }, res => {
-      let body = '';
-      res.on('data', d => body += d);
-      res.on('end', () => resolve({ status: res.statusCode, body }));
-    });
-    req.on('error', reject);
-    req.write(postBody);
-    req.end();
-  });
-}
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
-// Sign up — creates a SnapTrade user tied to the app username
+// Sign up — personal plan supports one user, credentials stored as env vars
 app.post('/signup', async (req, res) => {
-  if (!CLIENT_ID || !CONSUMER_KEY) return res.status(503).json({ error: 'Server not configured' });
+  if (!CLIENT_ID || !CONSUMER_KEY || !SNAP_USER_ID || !SNAP_USER_SECRET) {
+    return res.status(503).json({ error: 'Server not configured' });
+  }
   const { username } = req.body;
   if (!username) return res.status(400).json({ error: 'Username required' });
 
-  const snapUserId = `si_${username.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
-
-  try {
-    // Return existing session from memory if available
-    if (userStore.has(username)) {
-      const { userSecret } = userStore.get(username);
-      const token = createToken({ username, snapUserId, userSecret });
-      return res.json({ token, username });
-    }
-
-    let { status, body } = await snapPost('/snapTrade/registerUser', {}, { userId: snapUserId });
-    console.log('registerUser', status, body.slice(0, 100));
-
-    // User exists but not in memory (server restarted) — delete and re-register
-    if (status === 400 || status === 409) {
-      await snapGet('/snapTrade/deleteUser', { userId: snapUserId });
-      const r2 = await snapPost('/snapTrade/registerUser', {}, { userId: snapUserId });
-      status = r2.status; body = r2.body;
-      console.log('re-register', status, body.slice(0, 100));
-    }
-
-    const data = JSON.parse(body);
-    if (status === 200 || status === 201) {
-      userStore.set(username, { snapUserId, userSecret: data.userSecret });
-      const token = createToken({ username, snapUserId, userSecret: data.userSecret });
-      return res.json({ token, username });
-    }
-
-    return res.status(status).json({ error: data.detail || 'Registration failed' });
-  } catch (e) {
-    console.error(e.message);
-    res.status(500).json({ error: e.message });
-  }
+  const token = createToken({ username, snapUserId: SNAP_USER_ID, userSecret: SNAP_USER_SECRET });
+  res.json({ token, username });
 });
 
 // Proxy — all SnapTrade API calls, authenticated via session token
