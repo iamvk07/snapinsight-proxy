@@ -16,8 +16,8 @@ const SNAP_USER_SECRET = process.env.SNAPTRADE_USER_SECRET;
 const BASE      = 'https://api.snaptrade.com/api/v1';
 const BASE_PATH = '/api/v1';
 
-// In-memory user registry: username → hashed password
-const registry = new Map();
+// In-memory registry of known usernames
+const registry = new Set();
 
 function createToken(data) {
   const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
@@ -85,19 +85,11 @@ function snapPost(apiPath, queryParams, bodyData) {
 app.post('/signup', async (req, res) => {
   if (!CLIENT_ID || !CONSUMER_KEY || !SNAP_USER_ID || !SNAP_USER_SECRET)
     return res.status(503).json({ error: 'Server not configured' });
-  const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  const { username } = req.body;
+  if (!username) return res.status(400).json({ error: 'Username required' });
 
-  const hashed = crypto.createHash('sha256').update(password).digest('hex');
-
-  if (registry.has(username)) {
-    // Returning user — verify password
-    if (registry.get(username) !== hashed)
-      return res.status(401).json({ error: 'Incorrect password' });
-  } else {
-    // New user — register
-    registry.set(username, hashed);
-  }
+  // Auto-register new users; returning users just get a fresh token
+  registry.add(username);
 
   const token = createToken({ username, snapUserId: SNAP_USER_ID, userSecret: SNAP_USER_SECRET });
   res.json({ token, username });
