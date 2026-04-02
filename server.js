@@ -14,6 +14,9 @@ const SERVER_SECRET = process.env.SERVER_SECRET || 'snapinsight-secret-change-me
 const BASE      = 'https://api.snaptrade.com/api/v1';
 const BASE_PATH = '/api/v1';
 
+// In-memory user store (survives within same server session)
+const userStore = new Map();
+
 // ── Token helpers (no DB needed) ──────────────────────────────────────────────
 function createToken(data) {
   const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
@@ -94,17 +97,31 @@ app.post('/signup', async (req, res) => {
   const snapUserId = `si_${username.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
 
   try {
-    const { status, body } = await snapPost('/snapTrade/registerUser', {}, { userId: snapUserId });
-    const data = JSON.parse(body);
+    // Return existing session from memory if available
+    if (userStore.has(username)) {
+      const { userSecret } = userStore.get(username);
+      const token = createToken({ username, snapUserId, userSecret });
+      return res.json({ token, username });
+    }
+
+    let { status, body } = await snapPost('/snapTrade/registerUser', {}, { userId: snapUserId });
     console.log('registerUser', status, body.slice(0, 100));
 
+    // User exists but not in memory (server restarted) — delete and re-register
+    if (status === 400 || status === 409) {
+      await snapGet('/snapTrade/deleteUser', { userId: snapUserId });
+      const r2 = await snapPost('/snapTrade/registerUser', {}, { userId: snapUserId });
+      status = r2.status; body = r2.body;
+      console.log('re-register', status, body.slice(0, 100));
+    }
+
+    const data = JSON.parse(body);
     if (status === 200 || status === 201) {
+      userStore.set(username, { snapUserId, userSecret: data.userSecret });
       const token = createToken({ username, snapUserId, userSecret: data.userSecret });
       return res.json({ token, username });
     }
-    if (status === 400 || status === 409) {
-      return res.status(409).json({ error: 'Username already taken. Try a different one.' });
-    }
+
     return res.status(status).json({ error: data.detail || 'Registration failed' });
   } catch (e) {
     console.error(e.message);
