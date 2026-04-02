@@ -100,10 +100,8 @@ app.post('/connect', async (req, res) => {
     if (status === 200 || status === 201) {
       return res.json({ userId, userSecret: data.userSecret });
     }
-    if (status === 409) {
-      // User already exists — delete and re-register to get fresh secret
-      // OR just tell frontend the user is already registered and ask for secret
-      // Best approach without a DB: return a flag so frontend knows to ask for secret
+    // 409 = already exists, 400 can also mean duplicate user in SnapTrade
+    if (status === 409 || status === 400) {
       return res.json({ userId, exists: true });
     }
     return res.status(status).json(data);
