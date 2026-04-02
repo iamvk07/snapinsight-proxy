@@ -16,8 +16,6 @@ const SNAP_USER_SECRET = process.env.SNAPTRADE_USER_SECRET;
 const BASE      = 'https://api.snaptrade.com/api/v1';
 const BASE_PATH = '/api/v1';
 
-// In-memory registry of known usernames
-const registry = new Set();
 
 function createToken(data) {
   const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
@@ -86,10 +84,10 @@ app.post('/signup', async (req, res) => {
   if (!CLIENT_ID || !CONSUMER_KEY || !SNAP_USER_ID || !SNAP_USER_SECRET)
     return res.status(503).json({ error: 'Server not configured' });
   const { username } = req.body;
-  if (!username) return res.status(400).json({ error: 'Username required' });
+  if (!username) return res.status(400).json({ error: 'SnapTrade User ID is required' });
 
-  // Auto-register new users; returning users just get a fresh token
-  registry.add(username);
+  if (username !== SNAP_USER_ID)
+    return res.status(404).json({ error: 'SnapTrade User ID not found. Please make sure you are registered on SnapTrade.' });
 
   const token = createToken({ username, snapUserId: SNAP_USER_ID, userSecret: SNAP_USER_SECRET });
   res.json({ token, username });
