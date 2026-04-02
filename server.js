@@ -7,16 +7,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const CLIENT_ID     = process.env.SNAPTRADE_CLIENT_ID;
-const CONSUMER_KEY  = process.env.SNAPTRADE_CONSUMER_KEY;
-const SERVER_SECRET = process.env.SERVER_SECRET || 'snapinsight-secret-change-me';
+const CLIENT_ID        = process.env.SNAPTRADE_CLIENT_ID;
+const CONSUMER_KEY     = process.env.SNAPTRADE_CONSUMER_KEY;
+const SERVER_SECRET    = process.env.SERVER_SECRET || 'snapinsight-secret-change-me';
 const SNAP_USER_ID     = process.env.SNAPTRADE_USER_ID;
 const SNAP_USER_SECRET = process.env.SNAPTRADE_USER_SECRET;
 
 const BASE      = 'https://api.snaptrade.com/api/v1';
 const BASE_PATH = '/api/v1';
 
-// ── Token helpers (no DB needed) ──────────────────────────────────────────────
 function createToken(data) {
   const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
   const sig = crypto.createHmac('sha256', SERVER_SECRET).update(payload).digest('hex');
@@ -31,7 +30,6 @@ function verifyToken(token) {
   return JSON.parse(Buffer.from(payload, 'base64url').toString());
 }
 
-// ── SnapTrade signing ─────────────────────────────────────────────────────────
 function jsonStringifyOrdered(obj) {
   const allKeys = [], seen = {};
   JSON.stringify(obj, (key, value) => { if (!(key in seen)) { allKeys.push(key); seen[key] = null; } return value; });
@@ -49,11 +47,9 @@ function snapGet(apiPath, queryParams) {
   const timestamp   = Math.floor(Date.now() / 1000).toString();
   const qp          = new URLSearchParams({ clientId: CLIENT_ID, timestamp, ...queryParams });
   const queryString = qp.toString();
-  const signature   = buildSig(apiPath, queryString, null);
   const url         = `${BASE}${apiPath}?${queryString}`;
-
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { Signature: signature, Accept: 'application/json' } }, res => {
+    https.get(url, { headers: { Signature: buildSig(apiPath, queryString, null), Accept: 'application/json' } }, res => {
       let body = '';
       res.on('data', d => body += d);
       res.on('end', () => resolve({ status: res.statusCode, body }));
@@ -61,34 +57,64 @@ function snapGet(apiPath, queryParams) {
   });
 }
 
+function snapPost(apiPath, queryParams, bodyData) {
+  const timestamp   = Math.floor(Date.now() / 1000).toString();
+  const qp          = new URLSearchParams({ clientId: CLIENT_ID, timestamp, ...queryParams });
+  const queryString = qp.toString();
+  const postBody    = bodyData ? JSON.stringify(bodyData) : '';
+  const parsed      = new URL(`${BASE}${apiPath}?${queryString}`);
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: parsed.hostname, path: parsed.pathname + parsed.search, method: 'POST',
+      headers: { Signature: buildSig(apiPath, queryString, bodyData), Accept: 'application/json', 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postBody) }
+    }, res => {
+      let body = '';
+      res.on('data', d => body += d);
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', reject);
+    req.write(postBody);
+    req.end();
+  });
+}
 
-// ── Routes ────────────────────────────────────────────────────────────────────
-
-// Sign up — personal plan supports one user, credentials stored as env vars
+// Sign up / log in — issues a session token
 app.post('/signup', async (req, res) => {
-  if (!CLIENT_ID || !CONSUMER_KEY || !SNAP_USER_ID || !SNAP_USER_SECRET) {
+  if (!CLIENT_ID || !CONSUMER_KEY || !SNAP_USER_ID || !SNAP_USER_SECRET)
     return res.status(503).json({ error: 'Server not configured' });
-  }
   const { username } = req.body;
   if (!username) return res.status(400).json({ error: 'Username required' });
-
   const token = createToken({ username, snapUserId: SNAP_USER_ID, userSecret: SNAP_USER_SECRET });
   res.json({ token, username });
 });
 
-// Proxy — all SnapTrade API calls, authenticated via session token
+// Get SnapTrade brokerage connection URL
+app.post('/broker-connect', async (req, res) => {
+  if (!CLIENT_ID || !CONSUMER_KEY || !SNAP_USER_ID || !SNAP_USER_SECRET)
+    return res.status(503).json({ error: 'Server not configured' });
+  const { token } = req.body;
+  try { verifyToken(token); } catch { return res.status(401).json({ error: 'Invalid session' }); }
+
+  try {
+    const { status, body } = await snapPost('/snapTrade/login', { userId: SNAP_USER_ID, userSecret: SNAP_USER_SECRET }, {});
+    console.log('login', status, body.slice(0, 150));
+    const data = JSON.parse(body);
+    if (status === 200) return res.json({ redirectURI: data.redirectURI });
+    return res.status(status).json({ error: data.detail || 'Failed to get connection URL' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Proxy all SnapTrade data calls
 app.post('/proxy', async (req, res) => {
   if (!CLIENT_ID || !CONSUMER_KEY) return res.status(503).json({ error: 'Server not configured' });
   const { token, path, params = {} } = req.body;
-
   let userId, userSecret;
   try {
-    const session = verifyToken(token);
-    userId     = session.snapUserId;
-    userSecret = session.userSecret;
-  } catch {
-    return res.status(401).json({ error: 'Session expired. Please log in again.' });
-  }
+    const s = verifyToken(token);
+    userId = s.snapUserId; userSecret = s.userSecret;
+  } catch { return res.status(401).json({ error: 'Session expired. Please log in again.' }); }
 
   try {
     const { status, body } = await snapGet(path, { userId, userSecret, ...params });
@@ -96,7 +122,6 @@ app.post('/proxy', async (req, res) => {
     try { res.status(status).json(JSON.parse(body)); }
     catch { res.status(status).send(body); }
   } catch (e) {
-    console.error(e.message);
     res.status(500).json({ error: e.message });
   }
 });
