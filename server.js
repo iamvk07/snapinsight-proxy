@@ -163,7 +163,7 @@ app.post('/broker-connect', async (req, res) => {
   } catch { return res.status(401).json({ error: 'Invalid session' }); }
 
   try {
-    const { status, body } = await snapPost('/snapTrade/login', { userId, userSecret }, {});
+    const { status, body } = await snapPost('/snapTrade/login', { userId, userSecret }, null);
     console.log('login', status, body.slice(0, 150));
     const data = JSON.parse(body);
     if (status === 200) return res.json({ redirectURI: data.redirectURI });
