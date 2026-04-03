@@ -7,15 +7,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const CLIENT_ID        = process.env.SNAPTRADE_CLIENT_ID;
-const CONSUMER_KEY     = process.env.SNAPTRADE_CONSUMER_KEY;
-const SERVER_SECRET    = process.env.SERVER_SECRET || 'snapinsight-secret-change-me';
-const SNAP_USER_ID     = process.env.SNAPTRADE_USER_ID;
-const SNAP_USER_SECRET = process.env.SNAPTRADE_USER_SECRET;
+const CLIENT_ID    = process.env.SNAPTRADE_CLIENT_ID;
+const CONSUMER_KEY = process.env.SNAPTRADE_CONSUMER_KEY;
+const SERVER_SECRET = process.env.SERVER_SECRET || 'snapinsight-secret-change-me';
 
 const BASE      = 'https://api.snaptrade.com/api/v1';
 const BASE_PATH = '/api/v1';
 
+// In-memory registry: userId → userSecret
+const registry = new Map();
 
 function createToken(data) {
   const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
@@ -79,29 +79,51 @@ function snapPost(apiPath, queryParams, bodyData) {
   });
 }
 
-// Sign up / log in — issues a session token
+// Sign up / log in
 app.post('/signup', async (req, res) => {
-  if (!CLIENT_ID || !CONSUMER_KEY || !SNAP_USER_ID || !SNAP_USER_SECRET)
+  if (!CLIENT_ID || !CONSUMER_KEY)
     return res.status(503).json({ error: 'Server not configured' });
   const { username } = req.body;
-  if (!username) return res.status(400).json({ error: 'SnapTrade User ID is required' });
+  if (!username) return res.status(400).json({ error: 'User ID is required' });
 
-  if (username !== SNAP_USER_ID)
-    return res.status(404).json({ error: 'SnapTrade User ID not found. Please make sure you are registered on SnapTrade.' });
+  let userSecret;
 
-  const token = createToken({ username, snapUserId: SNAP_USER_ID, userSecret: SNAP_USER_SECRET });
+  if (registry.has(username)) {
+    // Returning user — use stored secret
+    userSecret = registry.get(username);
+  } else {
+    // New user — register on SnapTrade
+    try {
+      const { status, body } = await snapPost('/snapTrade/registerUser', {}, { userId: username });
+      const data = JSON.parse(body);
+      if (status === 200 || status === 201) {
+        userSecret = data.userSecret;
+        registry.set(username, userSecret);
+      } else {
+        return res.status(status).json({ error: data.detail || 'Registration failed' });
+      }
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  const token = createToken({ username, snapUserId: username, userSecret });
   res.json({ token, username });
 });
 
 // Get SnapTrade brokerage connection URL
 app.post('/broker-connect', async (req, res) => {
-  if (!CLIENT_ID || !CONSUMER_KEY || !SNAP_USER_ID || !SNAP_USER_SECRET)
+  if (!CLIENT_ID || !CONSUMER_KEY)
     return res.status(503).json({ error: 'Server not configured' });
   const { token } = req.body;
-  try { verifyToken(token); } catch { return res.status(401).json({ error: 'Invalid session' }); }
+  let userId, userSecret;
+  try {
+    const s = verifyToken(token);
+    userId = s.snapUserId; userSecret = s.userSecret;
+  } catch { return res.status(401).json({ error: 'Invalid session' }); }
 
   try {
-    const { status, body } = await snapPost('/snapTrade/login', { userId: SNAP_USER_ID, userSecret: SNAP_USER_SECRET }, {});
+    const { status, body } = await snapPost('/snapTrade/login', { userId, userSecret }, {});
     console.log('login', status, body.slice(0, 150));
     const data = JSON.parse(body);
     if (status === 200) return res.json({ redirectURI: data.redirectURI });
