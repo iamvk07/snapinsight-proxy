@@ -99,6 +99,15 @@ app.post('/signup', async (req, res) => {
       if (status === 200 || status === 201) {
         userSecret = data.userSecret;
         registry.set(username, userSecret);
+      } else if (status === 400 && body.includes('already exist')) {
+        // User exists on SnapTrade but not in our registry (e.g. server restart)
+        // Fall back to env var secret if it matches, otherwise reject
+        if (username === process.env.SNAPTRADE_USER_ID && process.env.SNAPTRADE_USER_SECRET) {
+          userSecret = process.env.SNAPTRADE_USER_SECRET;
+          registry.set(username, userSecret);
+        } else {
+          return res.status(409).json({ error: 'This User ID is already taken. Please choose a different one.' });
+        }
       } else {
         return res.status(status).json({ error: data.detail || 'Registration failed' });
       }
