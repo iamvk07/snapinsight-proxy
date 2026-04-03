@@ -17,6 +17,11 @@ const BASE_PATH = '/api/v1';
 // In-memory registry: userId → userSecret
 const registry = new Map();
 
+// Preload known user from env vars so they survive server restarts
+if (process.env.SNAPTRADE_USER_ID && process.env.SNAPTRADE_USER_SECRET) {
+  registry.set(process.env.SNAPTRADE_USER_ID, process.env.SNAPTRADE_USER_SECRET);
+}
+
 function createToken(data) {
   const payload = Buffer.from(JSON.stringify(data)).toString('base64url');
   const sig = crypto.createHmac('sha256', SERVER_SECRET).update(payload).digest('hex');
@@ -79,6 +84,25 @@ function snapPost(apiPath, queryParams, bodyData) {
   });
 }
 
+function snapDelete(apiPath, queryParams) {
+  const timestamp   = Math.floor(Date.now() / 1000).toString();
+  const qp          = new URLSearchParams({ clientId: CLIENT_ID, timestamp, ...queryParams });
+  const queryString = qp.toString();
+  const parsed      = new URL(`${BASE}${apiPath}?${queryString}`);
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: parsed.hostname, path: parsed.pathname + parsed.search, method: 'DELETE',
+      headers: { Signature: buildSig(apiPath, queryString, null), Accept: 'application/json' }
+    }, res => {
+      let body = '';
+      res.on('data', d => body += d);
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 // Sign up / log in
 app.post('/signup', async (req, res) => {
   if (!CLIENT_ID || !CONSUMER_KEY)
@@ -100,13 +124,20 @@ app.post('/signup', async (req, res) => {
         userSecret = data.userSecret;
         registry.set(username, userSecret);
       } else if (status === 400 && body.includes('already exist')) {
-        // User exists on SnapTrade but not in our registry (e.g. server restart)
-        // Fall back to env var secret if it matches, otherwise reject
-        if (username === process.env.SNAPTRADE_USER_ID && process.env.SNAPTRADE_USER_SECRET) {
-          userSecret = process.env.SNAPTRADE_USER_SECRET;
-          registry.set(username, userSecret);
-        } else {
-          return res.status(409).json({ error: 'This User ID is already taken. Please choose a different one.' });
+        // User exists on SnapTrade but not in our registry (server restarted)
+        // Delete and re-register to get a fresh userSecret
+        try {
+          await snapDelete('/snapTrade/deleteUser', { userId: username });
+          const r2 = await snapPost('/snapTrade/registerUser', {}, { userId: username });
+          const d2 = JSON.parse(r2.body);
+          if (r2.status === 200 || r2.status === 201) {
+            userSecret = d2.userSecret;
+            registry.set(username, userSecret);
+          } else {
+            return res.status(500).json({ error: 'Could not restore session. Please try a different User ID.' });
+          }
+        } catch (e) {
+          return res.status(500).json({ error: e.message });
         }
       } else {
         return res.status(status).json({ error: data.detail || 'Registration failed' });
