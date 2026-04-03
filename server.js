@@ -193,6 +193,71 @@ app.post('/proxy', async (req, res) => {
   }
 });
 
+// Yahoo Finance helper
+function yahooGet(url) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    https.get({ hostname: parsed.hostname, path: parsed.pathname + parsed.search,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json' }
+    }, res => {
+      let body = '';
+      res.on('data', d => body += d);
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    }).on('error', reject);
+  });
+}
+
+const SECTOR_ETFS = {
+  XLK:'Technology', XLF:'Financials', XLV:'Healthcare', XLE:'Energy',
+  XLI:'Industrials', XLP:'Consumer Staples', XLY:'Consumer Disc.', XLRE:'Real Estate',
+  XLU:'Utilities', XLC:'Comm. Services', XLB:'Materials'
+};
+
+// Market sector performance
+app.get('/market/sectors', async (req, res) => {
+  try {
+    const symbols = Object.keys(SECTOR_ETFS).join(',');
+    const r = await yahooGet(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&fields=regularMarketPrice,regularMarketChangePercent`);
+    const d = JSON.parse(r.body);
+    const results = (d.quoteResponse?.result || []).map(q => ({
+      symbol: q.symbol,
+      name: SECTOR_ETFS[q.symbol] || q.symbol,
+      change: q.regularMarketChangePercent || 0,
+      price: q.regularMarketPrice || 0
+    }));
+    res.json(results);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Quote info (sector, beta) for holdings
+app.post('/market/quotes', async (req, res) => {
+  const { symbols } = req.body;
+  if (!symbols?.length) return res.json([]);
+  try {
+    const symsStr = symbols.join(',');
+    const r = await yahooGet(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symsStr}&fields=regularMarketChangePercent,beta,sector`);
+    const d = JSON.parse(r.body);
+    const results = (d.quoteResponse?.result || []).map(q => ({
+      symbol: q.symbol,
+      sector: q.sector || 'Other',
+      beta: q.beta || null,
+      changePercent: q.regularMarketChangePercent || 0
+    }));
+    res.json(results);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// S&P 500 benchmark
+app.get('/market/benchmark', async (req, res) => {
+  try {
+    const r = await yahooGet('https://query1.finance.yahoo.com/v7/finance/quote?symbols=%5EGSPC&fields=regularMarketPrice,regularMarketChangePercent,regularMarketPreviousClose');
+    const d = JSON.parse(r.body);
+    const q = d.quoteResponse?.result?.[0];
+    if (!q) return res.status(404).json({ error: 'No data' });
+    res.json({ price: q.regularMarketPrice, changePercent: q.regularMarketChangePercent, prevClose: q.regularMarketPreviousClose });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'snapinsight-proxy' }));
 
 const PORT = process.env.PORT || 3000;
