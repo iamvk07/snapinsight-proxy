@@ -195,10 +195,27 @@ app.post('/proxy', async (req, res) => {
 
 // Yahoo Finance helper
 function yahooGet(url) {
+  // Use query2 hostname which is less aggressively blocked than query1
+  const fixedUrl = url.replace('query1.finance.yahoo.com', 'query2.finance.yahoo.com');
   return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    https.get({ hostname: parsed.hostname, path: parsed.pathname + parsed.search,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json' }
+    const parsed = new URL(fixedUrl);
+    https.get({
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'identity',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Referer': 'https://finance.yahoo.com/',
+        'Origin': 'https://finance.yahoo.com',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-site'
+      }
     }, res => {
       let body = '';
       res.on('data', d => body += d);
