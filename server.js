@@ -220,12 +220,11 @@ app.get('/market/sectors', async (_, res) => {
   if (!FINNHUB_KEY) return res.status(503).json({ error: 'FINNHUB_KEY not configured' });
   try {
     const entries = Object.entries(SECTOR_ETFS);
-    const quotes = await Promise.all(entries.map(([sym]) => finnhubGet(`/quote?symbol=${sym}`)));
-    const results = entries.map(([sym, name], i) => ({
-      symbol: sym, name,
-      change: quotes[i].dp || 0,
-      price: quotes[i].c || 0
-    }));
+    const settled = await Promise.allSettled(entries.map(([sym]) => finnhubGet(`/quote?symbol=${sym}`)));
+    const results = entries.map(([sym, name], i) => {
+      const q = settled[i].status === 'fulfilled' ? settled[i].value : {};
+      return { symbol: sym, name, change: q.dp || 0, price: q.c || 0 };
+    });
     res.json(results);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -236,19 +235,16 @@ app.post('/market/quotes', async (req, res) => {
   const { symbols } = req.body;
   if (!symbols?.length) return res.json([]);
   try {
-    const results = await Promise.all(symbols.map(async sym => {
-      const [profile, metrics] = await Promise.all([
+    const results = await Promise.allSettled(symbols.map(async sym => {
+      const [profile, metrics] = await Promise.allSettled([
         finnhubGet(`/stock/profile2?symbol=${sym}`),
         finnhubGet(`/stock/metric?symbol=${sym}&metric=all`)
       ]);
-      return {
-        symbol: sym,
-        sector: profile.finnhubIndustry || 'Other',
-        beta: metrics.metric?.beta || null,
-        changePercent: 0
-      };
+      const p = profile.status === 'fulfilled' ? profile.value : {};
+      const m = metrics.status === 'fulfilled' ? metrics.value : {};
+      return { symbol: sym, sector: p.finnhubIndustry || 'Other', beta: m.metric?.beta || null, changePercent: 0 };
     }));
-    res.json(results);
+    res.json(results.filter(r => r.status === 'fulfilled').map(r => r.value));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
