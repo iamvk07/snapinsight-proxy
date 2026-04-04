@@ -169,7 +169,7 @@ app.post('/broker-connect', async (req, res) => {
     if (status === 200) return res.json({ redirectURI: data.redirectURI });
     return res.status(status).json({ error: data.detail || 'Failed to get connection URL' });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    return res.status(500).json({ error: e.message });
   }
 });
 
