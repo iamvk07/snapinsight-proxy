@@ -193,33 +193,18 @@ app.post('/proxy', async (req, res) => {
   }
 });
 
-// Yahoo Finance helper
-function yahooGet(url) {
-  // Use query2 hostname which is less aggressively blocked than query1
-  const fixedUrl = url.replace('query1.finance.yahoo.com', 'query2.finance.yahoo.com');
+// Finnhub helper
+const FINNHUB_KEY = process.env.FINNHUB_KEY;
+function finnhubGet(path) {
   return new Promise((resolve, reject) => {
-    const parsed = new URL(fixedUrl);
-    https.get({
-      hostname: parsed.hostname,
-      path: parsed.pathname + parsed.search,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'identity',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Referer': 'https://finance.yahoo.com/',
-        'Origin': 'https://finance.yahoo.com',
-        'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site'
-      }
+    const url = new URL(`https://finnhub.io/api/v1${path}`);
+    url.searchParams.set('token', FINNHUB_KEY);
+    https.get({ hostname: url.hostname, path: url.pathname + url.search,
+      headers: { 'Accept': 'application/json' }
     }, res => {
       let body = '';
       res.on('data', d => body += d);
-      res.on('end', () => resolve({ status: res.statusCode, body }));
+      res.on('end', () => resolve(JSON.parse(body)));
     }).on('error', reject);
   });
 }
@@ -231,16 +216,15 @@ const SECTOR_ETFS = {
 };
 
 // Market sector performance
-app.get('/market/sectors', async (req, res) => {
+app.get('/market/sectors', async (_, res) => {
+  if (!FINNHUB_KEY) return res.status(503).json({ error: 'FINNHUB_KEY not configured' });
   try {
-    const symbols = Object.keys(SECTOR_ETFS).join(',');
-    const r = await yahooGet(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&fields=regularMarketPrice,regularMarketChangePercent`);
-    const d = JSON.parse(r.body);
-    const results = (d.quoteResponse?.result || []).map(q => ({
-      symbol: q.symbol,
-      name: SECTOR_ETFS[q.symbol] || q.symbol,
-      change: q.regularMarketChangePercent || 0,
-      price: q.regularMarketPrice || 0
+    const entries = Object.entries(SECTOR_ETFS);
+    const quotes = await Promise.all(entries.map(([sym]) => finnhubGet(`/quote?symbol=${sym}`)));
+    const results = entries.map(([sym, name], i) => ({
+      symbol: sym, name,
+      change: quotes[i].dp || 0,
+      price: quotes[i].c || 0
     }));
     res.json(results);
   } catch(e) { res.status(500).json({ error: e.message }); }
@@ -248,30 +232,33 @@ app.get('/market/sectors', async (req, res) => {
 
 // Quote info (sector, beta) for holdings
 app.post('/market/quotes', async (req, res) => {
+  if (!FINNHUB_KEY) return res.status(503).json({ error: 'FINNHUB_KEY not configured' });
   const { symbols } = req.body;
   if (!symbols?.length) return res.json([]);
   try {
-    const symsStr = symbols.join(',');
-    const r = await yahooGet(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symsStr}&fields=regularMarketChangePercent,beta,sector`);
-    const d = JSON.parse(r.body);
-    const results = (d.quoteResponse?.result || []).map(q => ({
-      symbol: q.symbol,
-      sector: q.sector || 'Other',
-      beta: q.beta || null,
-      changePercent: q.regularMarketChangePercent || 0
+    const results = await Promise.all(symbols.map(async sym => {
+      const [profile, metrics] = await Promise.all([
+        finnhubGet(`/stock/profile2?symbol=${sym}`),
+        finnhubGet(`/stock/metric?symbol=${sym}&metric=all`)
+      ]);
+      return {
+        symbol: sym,
+        sector: profile.finnhubIndustry || 'Other',
+        beta: metrics.metric?.beta || null,
+        changePercent: 0
+      };
     }));
     res.json(results);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// S&P 500 benchmark
+// S&P 500 benchmark (use SPY as proxy — Finnhub free tier doesn't support indices)
 app.get('/market/benchmark', async (req, res) => {
+  if (!FINNHUB_KEY) return res.status(503).json({ error: 'FINNHUB_KEY not configured' });
   try {
-    const r = await yahooGet('https://query1.finance.yahoo.com/v7/finance/quote?symbols=%5EGSPC&fields=regularMarketPrice,regularMarketChangePercent,regularMarketPreviousClose');
-    const d = JSON.parse(r.body);
-    const q = d.quoteResponse?.result?.[0];
-    if (!q) return res.status(404).json({ error: 'No data' });
-    res.json({ price: q.regularMarketPrice, changePercent: q.regularMarketChangePercent, prevClose: q.regularMarketPreviousClose });
+    const q = await finnhubGet('/quote?symbol=SPY');
+    if (!q.c) return res.status(404).json({ error: 'No data' });
+    res.json({ price: q.c, changePercent: q.dp || 0, prevClose: q.pc || 0 });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
