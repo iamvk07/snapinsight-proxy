@@ -218,7 +218,9 @@ function finnhubGet(path) {
     }, res => {
       let body = '';
       res.on('data', d => body += d);
-      res.on('end', () => resolve(JSON.parse(body)));
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)); } catch(e) { resolve({}); }
+      });
     }).on('error', reject);
   });
 }
@@ -264,11 +266,6 @@ app.post('/market/quotes', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`SnapInsight proxy listening on port ${PORT}`);
-});
-
 // S&P 500 benchmark (use SPY as proxy — Finnhub free tier doesn't support indices)
 app.get('/market/benchmark', async (req, res) => {
   if (!FINNHUB_KEY) return res.status(503).json({ error: 'FINNHUB_KEY not configured' });
@@ -280,3 +277,8 @@ app.get('/market/benchmark', async (req, res) => {
 });
 
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'snapinsight-proxy' }));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`SnapInsight proxy listening on port ${PORT}`);
+});
