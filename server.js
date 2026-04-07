@@ -14,12 +14,19 @@ const SERVER_SECRET = process.env.SERVER_SECRET || 'snapinsight-secret-change-me
 const BASE      = 'https://api.snaptrade.com/api/v1';
 const BASE_PATH = '/api/v1';
 
-// In-memory registry: userId → userSecret
+// In-memory registry: userId → { userSecret, passwordHash }
 const registry = new Map();
+
+function hashPassword(pw) {
+  return crypto.createHmac('sha256', SERVER_SECRET).update(pw).digest('hex');
+}
 
 // Preload known user from env vars so they survive server restarts
 if (process.env.SNAPTRADE_USER_ID && process.env.SNAPTRADE_USER_SECRET) {
-  registry.set(process.env.SNAPTRADE_USER_ID, process.env.SNAPTRADE_USER_SECRET);
+  registry.set(process.env.SNAPTRADE_USER_ID, {
+    userSecret: process.env.SNAPTRADE_USER_SECRET,
+    passwordHash: process.env.SNAPTRADE_USER_PASSWORD ? hashPassword(process.env.SNAPTRADE_USER_PASSWORD) : null
+  });
 }
 
 function createToken(data) {
@@ -107,14 +114,21 @@ function snapDelete(apiPath, queryParams) {
 app.post('/signup', async (req, res) => {
   if (!CLIENT_ID || !CONSUMER_KEY)
     return res.status(503).json({ error: 'Server not configured' });
-  const { username } = req.body;
+  const { username, password } = req.body;
   if (!username) return res.status(400).json({ error: 'User ID is required' });
+  if (!password)  return res.status(400).json({ error: 'Password is required' });
 
   let userSecret;
 
   if (registry.has(username)) {
-    // Returning user — use stored secret
-    userSecret = registry.get(username);
+    // Returning user — verify password
+    const entry = registry.get(username);
+    if (entry.passwordHash && entry.passwordHash !== hashPassword(password)) {
+      return res.status(401).json({ error: 'Incorrect password' });
+    }
+    // First login after env-preload (no password set yet) — set it now
+    if (!entry.passwordHash) entry.passwordHash = hashPassword(password);
+    userSecret = entry.userSecret;
   } else {
     // New user — register on SnapTrade
     try {
@@ -122,17 +136,16 @@ app.post('/signup', async (req, res) => {
       const data = JSON.parse(body);
       if (status === 200 || status === 201) {
         userSecret = data.userSecret;
-        registry.set(username, userSecret);
+        registry.set(username, { userSecret, passwordHash: hashPassword(password) });
       } else if (status === 400 && body.includes('already exist')) {
-        // User exists on SnapTrade but not in our registry (server restarted)
-        // Delete and re-register to get a fresh userSecret
+        // Exists on SnapTrade but not in registry (server restart) — re-register
         try {
           await snapDelete('/snapTrade/deleteUser', { userId: username });
           const r2 = await snapPost('/snapTrade/registerUser', {}, { userId: username });
           const d2 = JSON.parse(r2.body);
           if (r2.status === 200 || r2.status === 201) {
             userSecret = d2.userSecret;
-            registry.set(username, userSecret);
+            registry.set(username, { userSecret, passwordHash: hashPassword(password) });
           } else {
             return res.status(500).json({ error: 'Could not restore session. Please try a different User ID.' });
           }
@@ -163,7 +176,8 @@ app.post('/broker-connect', async (req, res) => {
   } catch { return res.status(401).json({ error: 'Invalid session' }); }
 
   try {
-    const { status, body } = await snapPost('/snapTrade/login', { userId, userSecret }, null);
+    const redirectURI = 'https://iamvk07.github.io/snap-insight/';
+    const { status, body } = await snapPost('/snapTrade/login', { userId, userSecret }, { redirectURI });
     console.log('login', status, body.slice(0, 150));
     const data = JSON.parse(body);
     if (status === 200) return res.json({ redirectURI: data.redirectURI });
@@ -236,16 +250,23 @@ app.post('/market/quotes', async (req, res) => {
   if (!symbols?.length) return res.json([]);
   try {
     const results = await Promise.allSettled(symbols.map(async sym => {
-      const [profile, metrics] = await Promise.allSettled([
+      const [profile, metrics, quote] = await Promise.allSettled([
         finnhubGet(`/stock/profile2?symbol=${sym}`),
-        finnhubGet(`/stock/metric?symbol=${sym}&metric=all`)
+        finnhubGet(`/stock/metric?symbol=${sym}&metric=all`),
+        finnhubGet(`/quote?symbol=${sym}`)
       ]);
       const p = profile.status === 'fulfilled' ? profile.value : {};
       const m = metrics.status === 'fulfilled' ? metrics.value : {};
-      return { symbol: sym, sector: p.finnhubIndustry || 'Other', beta: m.metric?.beta || null, changePercent: 0 };
+      const q = quote.status === 'fulfilled' ? quote.value : {};
+      return { symbol: sym, sector: p.finnhubIndustry || 'Other', beta: m.metric?.beta || null, changePercent: q.dp || 0 };
     }));
     res.json(results.filter(r => r.status === 'fulfilled').map(r => r.value));
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`SnapInsight proxy listening on port ${PORT}`);
 });
 
 // S&P 500 benchmark (use SPY as proxy — Finnhub free tier doesn't support indices)
@@ -259,6 +280,3 @@ app.get('/market/benchmark', async (req, res) => {
 });
 
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'snapinsight-proxy' }));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Proxy running on port ${PORT}`));
