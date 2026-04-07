@@ -91,30 +91,12 @@ function snapPost(apiPath, queryParams, bodyData) {
   });
 }
 
-function snapDelete(apiPath, queryParams) {
-  const timestamp   = Math.floor(Date.now() / 1000).toString();
-  const qp          = new URLSearchParams({ clientId: CLIENT_ID, timestamp, ...queryParams });
-  const queryString = qp.toString();
-  const parsed      = new URL(`${BASE}${apiPath}?${queryString}`);
-  return new Promise((resolve, reject) => {
-    const req = https.request({
-      hostname: parsed.hostname, path: parsed.pathname + parsed.search, method: 'DELETE',
-      headers: { Signature: buildSig(apiPath, queryString, null), Accept: 'application/json' }
-    }, res => {
-      let body = '';
-      res.on('data', d => body += d);
-      res.on('end', () => resolve({ status: res.statusCode, body }));
-    });
-    req.on('error', reject);
-    req.end();
-  });
-}
 
 // Sign up / log in
 app.post('/signup', async (req, res) => {
   if (!CLIENT_ID || !CONSUMER_KEY)
     return res.status(503).json({ error: 'Server not configured' });
-  const { username, password } = req.body;
+  const { username, password, token: existingToken } = req.body;
   if (!username) return res.status(400).json({ error: 'User ID is required' });
   if (!password)  return res.status(400).json({ error: 'Password is required' });
 
@@ -126,31 +108,33 @@ app.post('/signup', async (req, res) => {
     if (entry.passwordHash && entry.passwordHash !== hashPassword(password)) {
       return res.status(401).json({ error: 'Incorrect password' });
     }
-    // First login after env-preload (no password set yet) — set it now
     if (!entry.passwordHash) entry.passwordHash = hashPassword(password);
     userSecret = entry.userSecret;
   } else {
-    // New user — register on SnapTrade
+    // Not in registry (new user or server restarted) — try SnapTrade
     try {
       const { status, body } = await snapPost('/snapTrade/registerUser', {}, { userId: username });
       const data = JSON.parse(body);
       if (status === 200 || status === 201) {
+        // Brand new user
         userSecret = data.userSecret;
         registry.set(username, { userSecret, passwordHash: hashPassword(password) });
-      } else if (status === 400 && body.includes('already exist')) {
-        // Exists on SnapTrade but not in registry (server restart) — re-register
-        try {
-          await snapDelete('/snapTrade/deleteUser', { userId: username });
-          const r2 = await snapPost('/snapTrade/registerUser', {}, { userId: username });
-          const d2 = JSON.parse(r2.body);
-          if (r2.status === 200 || r2.status === 201) {
-            userSecret = d2.userSecret;
-            registry.set(username, { userSecret, passwordHash: hashPassword(password) });
-          } else {
-            return res.status(500).json({ error: 'Could not restore session. Please try a different User ID.' });
-          }
-        } catch (e) {
-          return res.status(500).json({ error: e.message });
+      } else if (status === 400 && body.includes('exist')) {
+        // User exists on SnapTrade but registry lost (server restart)
+        // Try to recover userSecret from the client's saved token
+        let recovered = false;
+        if (existingToken) {
+          try {
+            const decoded = verifyToken(existingToken);
+            if (decoded.snapUserId === username && decoded.userSecret) {
+              userSecret = decoded.userSecret;
+              registry.set(username, { userSecret, passwordHash: hashPassword(password) });
+              recovered = true;
+            }
+          } catch (_) { /* invalid token, fall through */ }
+        }
+        if (!recovered) {
+          return res.status(409).json({ error: 'Account exists but session was lost. Please use "Remember me" next time, or choose a different User ID.' });
         }
       } else {
         return res.status(status).json({ error: data.detail || 'Registration failed' });
