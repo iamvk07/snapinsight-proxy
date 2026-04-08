@@ -260,6 +260,23 @@ app.get('/market/benchmark', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// SPY historical candle data for performance chart
+app.get('/market/spy-history', async (req, res) => {
+  if (!FINNHUB_KEY) return res.status(503).json({ error: 'FINNHUB_KEY not configured' });
+  const range = req.query.range || '1M';
+  const to = Math.floor(Date.now() / 1000);
+  const days = { '1W': 7, '1M': 30, '3M': 90, '6M': 180, '1Y': 365 }[range] || 30;
+  const from = to - days * 86400;
+  try {
+    const data = await finnhubGet(`/stock/candle?symbol=SPY&resolution=D&from=${from}&to=${to}`);
+    if (!data.c || data.s === 'no_data') return res.json({ dates: [], prices: [] });
+    res.json({
+      dates: data.t.map(ts => new Date(ts * 1000).toISOString().slice(0, 10)),
+      prices: data.c
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'snapinsight-proxy' }));
 
 const PORT = process.env.PORT || 3000;
