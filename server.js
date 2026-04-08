@@ -260,12 +260,32 @@ app.get('/market/benchmark', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// SPY historical candle data for performance chart
+// SPY historical monthly candle data for performance chart
+app.get('/market/spy-monthly', async (_, res) => {
+  if (!FINNHUB_KEY) return res.status(503).json({ error: 'FINNHUB_KEY not configured' });
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - 730 * 86400; // 2 years back
+  try {
+    const data = await finnhubGet(`/stock/candle?symbol=SPY&resolution=M&from=${from}&to=${to}`);
+    if (!data.c || data.s === 'no_data') return res.json({ months: [] });
+    const months = data.t.map((ts, i) => {
+      const open = data.o[i];
+      const close = data.c[i];
+      const ret = open > 0 ? (close - open) / open * 100 : 0;
+      const d = new Date(ts * 1000);
+      const label = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      return { label, ret: parseFloat(ret.toFixed(2)) };
+    });
+    res.json({ months: months.reverse() }); // most recent first
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// SPY historical daily data (kept for benchmark use)
 app.get('/market/spy-history', async (req, res) => {
   if (!FINNHUB_KEY) return res.status(503).json({ error: 'FINNHUB_KEY not configured' });
-  const range = req.query.range || '1M';
+  const range = req.query.range || '1Y';
   const to = Math.floor(Date.now() / 1000);
-  const days = { '1W': 7, '1M': 30, '3M': 90, '6M': 180, '1Y': 365 }[range] || 30;
+  const days = { '1M': 30, '3M': 90, '6M': 180, '1Y': 365 }[range] || 365;
   const from = to - days * 86400;
   try {
     const data = await finnhubGet(`/stock/candle?symbol=SPY&resolution=D&from=${from}&to=${to}`);
