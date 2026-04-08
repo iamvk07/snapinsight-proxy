@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const https = require('https');
+const yahooFinance = require('yahoo-finance2').default;
 
 const app = express();
 app.use(cors());
@@ -209,56 +210,6 @@ function finnhubGet(path) {
   });
 }
 
-// Yahoo Finance with cookie+crumb auth (required from cloud IPs)
-let _yfCookies = null;
-let _yfCrumb   = null;
-let _yfCrumbTs = 0;
-
-function httpsGetBody(opts) {
-  return new Promise((resolve, reject) => {
-    https.get(opts, res => {
-      let body = '';
-      res.on('data', d => body += d);
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
-    }).on('error', reject);
-  });
-}
-
-async function getYFCrumb() {
-  // Refresh every 30 minutes
-  if (_yfCrumb && Date.now() - _yfCrumbTs < 30 * 60 * 1000) return _yfCrumb;
-  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
-  // Step 1: get cookies from Yahoo Finance homepage
-  const home = await httpsGetBody({
-    hostname: 'finance.yahoo.com', path: '/',
-    headers: { 'User-Agent': UA, 'Accept': 'text/html' }
-  });
-  const rawCookies = (home.headers['set-cookie'] || []).map(c => c.split(';')[0]);
-  _yfCookies = rawCookies.join('; ');
-  // Step 2: get crumb
-  const crumbRes = await httpsGetBody({
-    hostname: 'query2.finance.yahoo.com', path: '/v1/test/getcrumb',
-    headers: { 'User-Agent': UA, 'Cookie': _yfCookies, 'Accept': '*/*' }
-  });
-  _yfCrumb   = crumbRes.body.trim();
-  _yfCrumbTs = Date.now();
-  return _yfCrumb;
-}
-
-async function yahooGet(symbol, interval, range) {
-  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
-  try {
-    const crumb = await getYFCrumb();
-    const path = `/v8/finance/chart/${symbol}?interval=${interval}&range=${range}&crumb=${encodeURIComponent(crumb)}`;
-    const r = await httpsGetBody({
-      hostname: 'query2.finance.yahoo.com', path,
-      headers: { 'User-Agent': UA, 'Cookie': _yfCookies, 'Accept': 'application/json' }
-    });
-    return JSON.parse(r.body);
-  } catch(e) {
-    return {};
-  }
-}
 
 const SECTOR_ETFS = {
   XLK:'Technology', XLF:'Financials', XLV:'Healthcare', XLE:'Energy',
@@ -311,26 +262,32 @@ app.get('/market/benchmark', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// SPY historical monthly data via Yahoo Finance (free, no key needed)
+// SPY historical monthly data via yahoo-finance2 (handles auth automatically)
+let _spyMonthlyCache = null;
+let _spyMonthlyCacheTs = 0;
+
 app.get('/market/spy-monthly', async (_, res) => {
   try {
-    const data = await yahooGet('SPY', '1mo', '2y');
-    const result = data?.chart?.result?.[0];
-    if (!result?.timestamp) return res.json({ months: [] });
-    const { timestamp, indicators } = result;
-    const opens  = indicators.quote[0].open;
-    const closes = indicators.quote[0].close;
-    const months = timestamp
-      .map((ts, i) => {
-        const open = opens[i], close = closes[i];
-        if (!open || !close) return null;
-        const ret = (close - open) / open * 100;
-        const d = new Date(ts * 1000);
+    // Cache for 4 hours — data only changes once a month anyway
+    if (_spyMonthlyCache && Date.now() - _spyMonthlyCacheTs < 4 * 60 * 60 * 1000) {
+      return res.json({ months: _spyMonthlyCache });
+    }
+    const quotes = await yahooFinance.historical('SPY', {
+      period1: new Date(Date.now() - 730 * 86400 * 1000).toISOString().slice(0, 10),
+      interval: '1mo'
+    });
+    const months = quotes
+      .map(q => {
+        if (!q.open || !q.close) return null;
+        const ret = (q.close - q.open) / q.open * 100;
+        const d = new Date(q.date);
         const label = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
         return { label, ret: parseFloat(ret.toFixed(2)) };
       })
       .filter(Boolean)
       .reverse(); // most recent first
+    _spyMonthlyCache = months;
+    _spyMonthlyCacheTs = Date.now();
     res.json({ months });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
