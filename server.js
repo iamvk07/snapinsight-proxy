@@ -209,25 +209,55 @@ function finnhubGet(path) {
   });
 }
 
-// Yahoo Finance — no API key needed, works server-side
-function yahooGet(symbol, interval, range) {
+// Yahoo Finance with cookie+crumb auth (required from cloud IPs)
+let _yfCookies = null;
+let _yfCrumb   = null;
+let _yfCrumbTs = 0;
+
+function httpsGetBody(opts) {
   return new Promise((resolve, reject) => {
-    const path = `/v8/finance/chart/${symbol}?interval=${interval}&range=${range}`;
-    https.get({
-      hostname: 'query1.finance.yahoo.com',
-      path,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        'Accept': 'application/json'
-      }
-    }, res => {
+    https.get(opts, res => {
       let body = '';
       res.on('data', d => body += d);
-      res.on('end', () => {
-        try { resolve(JSON.parse(body)); } catch(e) { resolve({}); }
-      });
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
     }).on('error', reject);
   });
+}
+
+async function getYFCrumb() {
+  // Refresh every 30 minutes
+  if (_yfCrumb && Date.now() - _yfCrumbTs < 30 * 60 * 1000) return _yfCrumb;
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+  // Step 1: get cookies from Yahoo Finance homepage
+  const home = await httpsGetBody({
+    hostname: 'finance.yahoo.com', path: '/',
+    headers: { 'User-Agent': UA, 'Accept': 'text/html' }
+  });
+  const rawCookies = (home.headers['set-cookie'] || []).map(c => c.split(';')[0]);
+  _yfCookies = rawCookies.join('; ');
+  // Step 2: get crumb
+  const crumbRes = await httpsGetBody({
+    hostname: 'query2.finance.yahoo.com', path: '/v1/test/getcrumb',
+    headers: { 'User-Agent': UA, 'Cookie': _yfCookies, 'Accept': '*/*' }
+  });
+  _yfCrumb   = crumbRes.body.trim();
+  _yfCrumbTs = Date.now();
+  return _yfCrumb;
+}
+
+async function yahooGet(symbol, interval, range) {
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+  try {
+    const crumb = await getYFCrumb();
+    const path = `/v8/finance/chart/${symbol}?interval=${interval}&range=${range}&crumb=${encodeURIComponent(crumb)}`;
+    const r = await httpsGetBody({
+      hostname: 'query2.finance.yahoo.com', path,
+      headers: { 'User-Agent': UA, 'Cookie': _yfCookies, 'Accept': 'application/json' }
+    });
+    return JSON.parse(r.body);
+  } catch(e) {
+    return {};
+  }
 }
 
 const SECTOR_ETFS = {
