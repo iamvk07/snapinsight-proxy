@@ -209,6 +209,27 @@ function finnhubGet(path) {
   });
 }
 
+// Yahoo Finance — no API key needed, works server-side
+function yahooGet(symbol, interval, range) {
+  return new Promise((resolve, reject) => {
+    const path = `/v8/finance/chart/${symbol}?interval=${interval}&range=${range}`;
+    https.get({
+      hostname: 'query1.finance.yahoo.com',
+      path,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'Accept': 'application/json'
+      }
+    }, res => {
+      let body = '';
+      res.on('data', d => body += d);
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)); } catch(e) { resolve({}); }
+      });
+    }).on('error', reject);
+  });
+}
+
 const SECTOR_ETFS = {
   XLK:'Technology', XLF:'Financials', XLV:'Healthcare', XLE:'Energy',
   XLI:'Industrials', XLP:'Consumer Staples', XLY:'Consumer Disc.', XLRE:'Real Estate',
@@ -260,40 +281,27 @@ app.get('/market/benchmark', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// SPY historical monthly candle data for performance chart
+// SPY historical monthly data via Yahoo Finance (free, no key needed)
 app.get('/market/spy-monthly', async (_, res) => {
-  if (!FINNHUB_KEY) return res.status(503).json({ error: 'FINNHUB_KEY not configured' });
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - 730 * 86400; // 2 years back
   try {
-    const data = await finnhubGet(`/stock/candle?symbol=SPY&resolution=M&from=${from}&to=${to}`);
-    if (!data.c || data.s === 'no_data') return res.json({ months: [] });
-    const months = data.t.map((ts, i) => {
-      const open = data.o[i];
-      const close = data.c[i];
-      const ret = open > 0 ? (close - open) / open * 100 : 0;
-      const d = new Date(ts * 1000);
-      const label = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      return { label, ret: parseFloat(ret.toFixed(2)) };
-    });
-    res.json({ months: months.reverse() }); // most recent first
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
-
-// SPY historical daily data (kept for benchmark use)
-app.get('/market/spy-history', async (req, res) => {
-  if (!FINNHUB_KEY) return res.status(503).json({ error: 'FINNHUB_KEY not configured' });
-  const range = req.query.range || '1Y';
-  const to = Math.floor(Date.now() / 1000);
-  const days = { '1M': 30, '3M': 90, '6M': 180, '1Y': 365 }[range] || 365;
-  const from = to - days * 86400;
-  try {
-    const data = await finnhubGet(`/stock/candle?symbol=SPY&resolution=D&from=${from}&to=${to}`);
-    if (!data.c || data.s === 'no_data') return res.json({ dates: [], prices: [] });
-    res.json({
-      dates: data.t.map(ts => new Date(ts * 1000).toISOString().slice(0, 10)),
-      prices: data.c
-    });
+    const data = await yahooGet('SPY', '1mo', '2y');
+    const result = data?.chart?.result?.[0];
+    if (!result?.timestamp) return res.json({ months: [] });
+    const { timestamp, indicators } = result;
+    const opens  = indicators.quote[0].open;
+    const closes = indicators.quote[0].close;
+    const months = timestamp
+      .map((ts, i) => {
+        const open = opens[i], close = closes[i];
+        if (!open || !close) return null;
+        const ret = (close - open) / open * 100;
+        const d = new Date(ts * 1000);
+        const label = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        return { label, ret: parseFloat(ret.toFixed(2)) };
+      })
+      .filter(Boolean)
+      .reverse(); // most recent first
+    res.json({ months });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
